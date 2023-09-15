@@ -37,6 +37,7 @@ mod constants;
 pub mod attestation;
 pub mod crypto;
 
+pub mod assertion;
 pub mod core;
 pub mod error;
 pub mod interface;
