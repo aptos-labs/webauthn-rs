@@ -43,7 +43,7 @@ type VerificationData = Vec<u8>;
 ///
 /// For more info: https://www.w3.org/TR/webauthn-3/#sctn-verifying-assertion
 #[allow(dead_code)]
-pub(crate) fn parse_public_key_credential(
+pub fn parse_public_key_credential(
     rsp: &PublicKeyCredential,
     cose_algorithm: COSEAlgorithm,
 ) -> Result<(VerificationData, Signature), WebauthnError> {
