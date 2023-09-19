@@ -5,7 +5,7 @@ use crate::attestation::AttestationFormat;
 use crate::error::WebauthnError;
 use crate::proto::*;
 use base64urlsafedata::Base64UrlSafeData;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use std::borrow::Borrow;
 use std::convert::TryFrom;
@@ -359,7 +359,7 @@ fn authenticator_data_parser<T: Ceremony>(i: &[u8]) -> nom::IResult<&[u8], Authe
 }
 
 /// Data returned by this authenticator during registration.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticatorData<T: Ceremony> {
     /// Hash of the relying party id.
     pub(crate) rp_id_hash: [u8; 32],
@@ -485,14 +485,21 @@ impl<T: Ceremony> TryFrom<&AuthenticatorAttestationResponseRaw>
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct AuthenticatorAssertionResponse<T: Ceremony> {
-    pub(crate) authenticator_data: AuthenticatorData<T>,
-    pub(crate) authenticator_data_bytes: Vec<u8>,
-    pub(crate) client_data: CollectedClientData,
-    pub(crate) client_data_bytes: Vec<u8>,
-    pub(crate) signature: Vec<u8>,
-    pub(crate) _user_handle: Option<Vec<u8>>,
+/// Authenticator Assertion Response
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthenticatorAssertionResponse<T: Ceremony> {
+    /// Authenticator Data Object
+    pub authenticator_data: AuthenticatorData<T>,
+    /// Authenticator Data Bytes
+    pub authenticator_data_bytes: Vec<u8>,
+    /// Client Data Object
+    pub client_data: CollectedClientData,
+    /// Client Data Bytes
+    pub client_data_bytes: Vec<u8>,
+    /// DER Encoded Signature
+    pub signature: Vec<u8>,
+    /// User Handle
+    pub _user_handle: Option<Vec<u8>>,
 }
 
 impl<T: Ceremony> TryFrom<&AuthenticatorAssertionResponseRaw>

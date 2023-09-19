@@ -562,17 +562,21 @@ impl TryFrom<SerialisableAttestationData> for ParsedAttestationData {
 }
 
 /// Marker type parameter for data related to registration ceremony
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Registration;
 
 /// Marker type parameter for data related to authentication ceremony
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Authentication;
 
 /// Trait for ceremony marker structs
 pub trait Ceremony {
     /// The type of the extension outputs of the ceremony
-    type SignedExtensions: DeserializeOwned + std::fmt::Debug + std::default::Default;
+    type SignedExtensions: std::fmt::Debug
+        + std::default::Default
+        + Clone
+        + Serialize
+        + DeserializeOwned;
 }
 
 impl Ceremony for Registration {
@@ -621,7 +625,7 @@ pub struct AuthenticationSignedExtensions {
 }
 
 /// Attested Credential Data
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestedCredentialData {
     /// The guid of the authenticator. May indicate manufacturer.
     pub aaguid: Aaguid,
