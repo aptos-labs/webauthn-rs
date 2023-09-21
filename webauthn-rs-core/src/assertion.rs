@@ -18,6 +18,7 @@ use p256::ecdsa::Signature;
 use std::convert::TryFrom;
 
 type VerificationData = Vec<u8>;
+type ActualChallenge = Vec<u8>;
 
 /// A modified version of [`verify_credential_internal`](crate::WebauthnCore::verify_credential_internal)
 /// with omitted checks, not needed for [`AccountAuthenticator`](https://github.com/aptos-labs/aptos-core/blob/main/types/src/transaction/authenticator.rs#L383)
@@ -39,20 +40,21 @@ type VerificationData = Vec<u8>;
 ///
 /// aka `verification_data`
 ///
-/// Returns tuple of `verification_data` and [`Signature`](p256::ecdsa::Signature)
+/// Returns tuple of `verification_data`, [`Signature`](p256::ecdsa::Signature), and `actual_challenge`
 ///
 /// For more info: https://www.w3.org/TR/webauthn-3/#sctn-verifying-assertion
 #[allow(dead_code)]
 pub fn parse_public_key_credential(
     rsp: &PublicKeyCredential,
     cose_algorithm: COSEAlgorithm,
-) -> Result<(VerificationData, Signature), WebauthnError> {
+) -> Result<(VerificationData, Signature, ActualChallenge), WebauthnError> {
     // Parse the PublicKeyCredential response
     let data: AuthenticatorAssertionResponse<Authentication> =
         AuthenticatorAssertionResponse::try_from(&rsp.response).map_err(|e| {
             debug!("AuthenticatorAssertionResponse::try_from -> {:?}", e);
             e
         })?;
+    let actual_challenge = &data.client_data.challenge.0;
 
     let c = &data.client_data;
 
@@ -85,7 +87,11 @@ pub fn parse_public_key_credential(
                     debug!("p256_der_to_raw_signature -> {:#?}", e);
                     WebauthnError::AttestationStatementSigInvalid
                 })?;
-            Ok((verification_data, fixed_size_p256_signature))
+            Ok((
+                verification_data,
+                fixed_size_p256_signature,
+                actual_challenge.clone(),
+            ))
         }
         _ => {
             debug!("Unsupported signature scheme");
@@ -288,7 +294,7 @@ mod tests {
                 let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point);
                 assert!(verifying_key.is_ok());
 
-                let (message_bytes, signature) = r.unwrap();
+                let (message_bytes, signature, ..) = r.unwrap();
 
                 let verified = verifying_key
                     .unwrap()
@@ -332,12 +338,12 @@ mod tests {
                 let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point);
                 assert!(verifying_key.is_ok());
 
-                let (message_bytes, signature) = r.unwrap();
+                let (verification_data, signature, ..) = r.unwrap();
 
                 // Should err as verifying_key does not correspond to this signature
                 let verified = verifying_key
                     .unwrap()
-                    .verify(message_bytes.as_slice(), &signature);
+                    .verify(verification_data.as_slice(), &signature);
 
                 assert!(verified.is_err());
             }
