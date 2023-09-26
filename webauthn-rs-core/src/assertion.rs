@@ -80,8 +80,8 @@ pub fn parse_public_key_credential(
     match cose_algorithm {
         COSEAlgorithm::ES256 => {
             // Convert the DER, byte encoded signature to a P256Signature that can then be used
-            // to derive the raw, fixed byte length signature. Uses the recommended curve ->
-            // SECP256R1
+            // to derive the raw, fixed byte length signature.
+            // Uses the recommended curve -> SECP256R1
             let fixed_size_p256_signature =
                 p256_der_to_fixed_size_signature(data.signature.as_slice()).map_err(|e| {
                     debug!("p256_der_to_raw_signature -> {:#?}", e);
