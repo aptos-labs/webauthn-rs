@@ -1,103 +1,128 @@
-//! This contains all of the standalone webauthn assertion
-//! functionality for usage with Aptos' [`AccountAuthenticator`](https://github.com/aptos-labs/aptos-core/blob/main/types/src/transaction/authenticator.rs#L383)
-//! for webauthn transactions.
-//!
-//! It uses and refactors [`authenticate_credential`](crate::WebauthnCore::authenticate_credential)
-//! to statelessly support assertion verification, without the need of a
-//! [`WebauthnCore`](crate::WebauthnCore) struct. We exclude many of
-//! the verification steps from [`verify_credential_internal`](crate::WebauthnCore::verify_credential_internal)
-//! as they are not needed.
+//! This file contains WebAuthn helper functions
+//! for usage with Aptos' [`AccountAuthenticator`](https://github.com/aptos-labs/aptos-core/blob/main/types/src/transaction/authenticator.rs#L383)
+//! for WebAuthn transactions.
 
 #![warn(missing_docs)]
 
 use crate::crypto::compute_sha256;
-use crate::error::WebauthnError;
+use crate::error::{WebauthnError, WebauthnResult};
 use crate::internals::*;
 use crate::proto::*;
 use p256::ecdsa::Signature;
+use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
 
-type VerificationData = Vec<u8>;
-type ActualChallenge = Vec<u8>;
+/// Partial Authenticator Assertion Response Raw
+/// Same as [`AuthenticatorAssertionResponseRaw`](crate::proto::AuthenticatorAssertionResponseRaw)
+/// but does NOT include user handle
+/// <https://w3c.github.io/webauthn/#authenticatorassertionresponse>
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PartialAuthenticatorAssertionResponseRaw {
+    /// Raw authenticator data
+    #[serde(rename = "authenticatorData")]
+    pub authenticator_data: Base64UrlSafeData,
+    /// Client data json
+    #[serde(rename = "clientDataJSON")]
+    pub client_data_json: Base64UrlSafeData,
+    /// Signature
+    pub signature: Base64UrlSafeData,
+}
 
-/// A modified version of [`verify_credential_internal`](crate::WebauthnCore::verify_credential_internal)
-/// with omitted checks, not needed for [`AccountAuthenticator`](https://github.com/aptos-labs/aptos-core/blob/main/types/src/transaction/authenticator.rs#L383)
-///
-/// Some of the omitted checks include:
-/// - MismatchedChallenge check
-/// - AllowedOrigins check
-/// - AppId extension and rpId hash check
-/// - UserPresent flag
-/// - UserVerified flag
-/// - Credential Backed Up or Backup Eligible
-/// - Authenticator Extensions check
-/// - IMPORTANT: Does not verify the signature
-///
-/// It relies on the `AccountAuthenticator` to verify the signature
+impl TryFrom<&[u8]> for PartialAuthenticatorAssertionResponseRaw {
+    type Error = WebauthnError;
+
+    /// Decodes BCS encoded bytes to reconstruct `PartialAuthenticatorAssertionResponseRaw`
+    ///
+    /// `paarr_bcs_bytes` is a BCS encoded vector representation of `PartialAuthenticatorAssertionResponseRaw`
+    /// that contains the following items in order:
+    /// 1. signature
+    /// 2. authenticator_data
+    /// 3. client_data_json
+    fn try_from(paarr_bcs_bytes: &[u8]) -> Result<Self, Self::Error> {
+        // Decode the BCS encoded bytes
+        let vec_paarr_bytes: Vec<Vec<u8>> = bcs::from_bytes(paarr_bcs_bytes)?;
+
+        Ok(PartialAuthenticatorAssertionResponseRaw {
+            signature: Base64UrlSafeData(vec_paarr_bytes[0].clone()),
+            authenticator_data: Base64UrlSafeData(vec_paarr_bytes[1].clone()),
+            client_data_json: Base64UrlSafeData(vec_paarr_bytes[2].clone()),
+        })
+    }
+}
+
+/// Partial Authenticator Assertion Response
+/// Same as [`AuthenticatorAssertionResponse`](crate::internals::AuthenticatorAssertionResponse)
+/// but does NOT include user handle
+/// <https://w3c.github.io/webauthn/#authenticatorassertionresponse>
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartialAuthenticatorAssertionResponse<T: Ceremony> {
+    /// Authenticator Data Object
+    pub authenticator_data: AuthenticatorData<T>,
+    /// Authenticator Data Bytes
+    pub authenticator_data_bytes: Vec<u8>,
+    /// Client Data Object
+    pub client_data: CollectedClientData,
+    /// Client Data Bytes
+    pub client_data_bytes: Vec<u8>,
+    /// DER Encoded Signature
+    pub signature: Vec<u8>,
+}
+
+impl<T: Ceremony> TryFrom<&PartialAuthenticatorAssertionResponseRaw>
+    for PartialAuthenticatorAssertionResponse<T>
+{
+    type Error = WebauthnError;
+    fn try_from(paarr: &PartialAuthenticatorAssertionResponseRaw) -> Result<Self, Self::Error> {
+        Ok(PartialAuthenticatorAssertionResponse {
+            authenticator_data: AuthenticatorData::try_from(paarr.authenticator_data.as_ref())?,
+            authenticator_data_bytes: paarr.authenticator_data.clone().into(),
+            client_data: serde_json::from_slice(paarr.client_data_json.as_ref())
+                .map_err(WebauthnError::ParseJSONFailure)?,
+            client_data_bytes: paarr.client_data_json.clone().into(),
+            signature: paarr.signature.clone().into(),
+        })
+    }
+}
+
+/// Parses a BCS encoded vector representation of `PartialAuthenticatorAssertionResponseRaw`
+#[allow(dead_code)]
+pub fn parse_bcs_encoded_paarr_vector(
+    bytes: &[u8],
+) -> Result<PartialAuthenticatorAssertionResponse<Authentication>, WebauthnError> {
+    // Parse the PartialAuthenticatorAssertionResponseRaw response
+    let paar: PartialAuthenticatorAssertionResponse<Authentication> =
+        PartialAuthenticatorAssertionResponse::try_from(
+            &PartialAuthenticatorAssertionResponseRaw::try_from(bytes)?,
+        )?;
+
+    Ok(paar)
+}
+
+/// Generates verification data
+/// Relies on the `AccountAuthenticator` to verify the signature
 /// over the binary concatenation of
 /// 1. [`authenticator_data_bytes`](crate::internals::AuthenticatorAssertionResponse) and
-/// 2. [`client_data_json_hash`](crate::internals::AuthenticatorAssertionResponse),
+/// 2. SHA-256 hash of [`client_data_bytes`](crate::internals::AuthenticatorAssertionResponse),
 ///
 /// aka `verification_data`
-///
-/// Returns tuple of `verification_data`, [`Signature`](p256::ecdsa::Signature), and `actual_challenge`
-///
-/// For more info: https://www.w3.org/TR/webauthn-3/#sctn-verifying-assertion
 #[allow(dead_code)]
-pub fn parse_public_key_credential(
-    rsp: &PublicKeyCredential,
-    cose_algorithm: COSEAlgorithm,
-) -> Result<(VerificationData, Signature, ActualChallenge), WebauthnError> {
-    // Parse the PublicKeyCredential response
-    let data: AuthenticatorAssertionResponse<Authentication> =
-        AuthenticatorAssertionResponse::try_from(&rsp.response).map_err(|e| {
-            debug!("AuthenticatorAssertionResponse::try_from -> {:?}", e);
-            e
-        })?;
-    let actual_challenge = &data.client_data.challenge.0;
-
-    let c = &data.client_data;
-
-    // Verify that the value of C.type is the string webauthn.get.
-    if c.type_ != "webauthn.get" {
-        return Err(WebauthnError::InvalidClientDataType);
-    }
-
+pub fn generate_verification_data(
+    authenticator_data_bytes: &[u8],
+    client_data_bytes: &[u8],
+) -> Vec<u8> {
     // Let hash be the result of computing a hash over the cData using SHA-256.
-    let client_data_json_hash = compute_sha256(data.client_data_bytes.as_slice());
-
+    let client_data_json_hash = compute_sha256(client_data_bytes);
     // Binary concatenation of authData and hash.
     // Note: This is compatible with signatures generated by FIDO U2F
     // authenticators. See §6.1.2 FIDO U2F Signature Format Compatibility
     // https://www.w3.org/TR/webauthn-2/#sctn-fido-u2f-sig-format-compat
-    let verification_data: Vec<u8> = data
-        .authenticator_data_bytes
+    let verification_data: Vec<u8> = authenticator_data_bytes
         .iter()
         .chain(client_data_json_hash.iter())
         .copied()
         .collect();
 
-    match cose_algorithm {
-        COSEAlgorithm::ES256 => {
-            // Convert the DER, byte encoded signature to a P256Signature that can then be used
-            // to derive the raw, fixed byte length signature.
-            // Uses the recommended curve -> SECP256R1
-            let fixed_size_p256_signature =
-                p256_der_to_fixed_size_signature(data.signature.as_slice()).map_err(|e| {
-                    debug!("p256_der_to_raw_signature -> {:#?}", e);
-                    WebauthnError::AttestationStatementSigInvalid
-                })?;
-            Ok((
-                verification_data,
-                fixed_size_p256_signature,
-                actual_challenge.clone(),
-            ))
-        }
-        _ => {
-            debug!("Unsupported signature scheme");
-            Err(WebauthnError::COSEKeyInvalidAlgorithm)
-        }
-    }
+    verification_data
 }
 
 /// WebAuthn ES256 Signatures are ASN.1 DER Ecdsa-Sig-Value encoded which
@@ -108,7 +133,10 @@ pub fn parse_public_key_credential(
 /// signature lengths will be 64 bytes for P256
 ///
 /// https://www.w3.org/TR/webauthn-2/#sctn-signature-attestation-types
-fn p256_der_to_fixed_size_signature(der_signature: &[u8]) -> Result<Signature, p256::ecdsa::Error> {
+#[allow(dead_code)]
+pub fn p256_der_to_fixed_size_signature(
+    der_signature: &[u8],
+) -> Result<Signature, p256::ecdsa::Error> {
     let sig = Signature::from_der(der_signature).map_err(|e| {
         debug!("Signature::from_der -> {:?}", e);
         e
@@ -116,11 +144,50 @@ fn p256_der_to_fixed_size_signature(der_signature: &[u8]) -> Result<Signature, p
     Ok(sig)
 }
 
+/// This is used primarily in testing, but this helper function  creates a
+/// BCS encoded, vector representation of `PartialAuthenticatorAssertionResponseRaw` from
+/// 1. `signature`
+/// 2. `authenticator_data_bytes`
+/// 3. `client_data_bytes`
+/// Returns BCS encoded byte buffer
+#[allow(dead_code)]
+pub fn generate_bcs_encoded_paarr_vector(
+    signature: &[u8],
+    authenticator_data_bytes: &[u8],
+    client_data_bytes: &[u8],
+) -> WebauthnResult<Vec<u8>> {
+    // Sanity check -> creating an AuthenticatorAssertionResponse
+    // to ensure function parameters were passed in the right order
+    let auth_assertion_resp_raw = AuthenticatorAssertionResponseRaw {
+        client_data_json: Base64UrlSafeData::from(client_data_bytes.to_vec()),
+        authenticator_data: Base64UrlSafeData::from(authenticator_data_bytes.to_vec()),
+        signature: Base64UrlSafeData::from(signature.to_vec()),
+        user_handle: None,
+    };
+
+    AuthenticatorAssertionResponse::<Authentication>::try_from(&auth_assertion_resp_raw).map_err(
+        |e| {
+            debug!("AuthenticatorAssertionResponse::try_from -> {:?}", e);
+            e
+        },
+    )?;
+
+    // BCS encode vector
+    let bcs_vec = vec![signature, authenticator_data_bytes, client_data_bytes];
+    bcs::to_bytes(&bcs_vec).map_err(|e| {
+        error!(?e, "generate_bcs_encoded_paarr_vector failed to bcs encode");
+        WebauthnError::EncodeBCSFailure
+    })
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::panic)]
 
-    use crate::assertion::{p256_der_to_fixed_size_signature, parse_public_key_credential};
+    use crate::assertion::{
+        generate_bcs_encoded_paarr_vector, generate_verification_data,
+        p256_der_to_fixed_size_signature, parse_bcs_encoded_paarr_vector,
+    };
     use crate::internals::AuthenticatorAssertionResponse;
     use crate::proto::*;
     use crate::AttestationFormat;
@@ -141,6 +208,18 @@ mod tests {
             "type":"public-key"
         }
         "#;
+
+    // Helper function to create BCS Encoded PAARR from RSP above
+    fn create_bcs_encoded_paarr_from_rsp() -> Vec<u8> {
+        let credential: PublicKeyCredential = serde_json::from_str(RSP).unwrap();
+        let bcs_paarr = generate_bcs_encoded_paarr_vector(
+            credential.response.signature.0.as_slice(),
+            credential.response.authenticator_data.0.as_slice(),
+            credential.response.client_data_json.0.as_slice(),
+        )
+        .unwrap();
+        bcs_paarr
+    }
 
     // Helper function that creates a test P256 credential, associated with RSP above
     fn create_correct_p256_credential() -> Credential {
@@ -225,6 +304,38 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_bcs_encoded_paarr_from_vec() {
+        // Another unique example of the BCS encoded vector representation of
+        // PartialAuthenticatorAssertionResponseRaw, in vector form
+        let bcs_encoded_rsp: Vec<u8> = vec![
+            3, 70, 48, 68, 2, 32, 55, 241, 48, 1, 102, 63, 206, 168, 248, 101, 238, 125, 176, 248,
+            246, 65, 58, 156, 133, 23, 117, 140, 86, 102, 99, 93, 77, 54, 178, 208, 211, 84, 2, 32,
+            120, 223, 41, 105, 157, 7, 237, 70, 152, 255, 69, 242, 10, 204, 248, 159, 72, 13, 38,
+            41, 227, 17, 210, 229, 199, 79, 181, 172, 74, 148, 194, 75, 37, 73, 150, 13, 229, 136,
+            14, 140, 104, 116, 52, 23, 15, 100, 118, 96, 91, 143, 228, 174, 185, 162, 134, 50, 199,
+            153, 92, 243, 186, 131, 29, 151, 99, 5, 0, 0, 0, 0, 102, 123, 34, 116, 121, 112, 101,
+            34, 58, 34, 119, 101, 98, 97, 117, 116, 104, 110, 46, 103, 101, 116, 34, 44, 34, 99,
+            104, 97, 108, 108, 101, 110, 103, 101, 34, 58, 34, 65, 81, 73, 68, 66, 65, 85, 71, 66,
+            119, 103, 34, 44, 34, 111, 114, 105, 103, 105, 110, 34, 58, 34, 104, 116, 116, 112, 58,
+            47, 47, 108, 111, 99, 97, 108, 104, 111, 115, 116, 58, 51, 48, 48, 49, 34, 44, 34, 99,
+            114, 111, 115, 115, 79, 114, 105, 103, 105, 110, 34, 58, 102, 97, 108, 115, 101, 125,
+        ];
+
+        // Parse into PartialAuthenticatorAssertionResponseRaw, ensure it's decodeable
+        let paar = parse_bcs_encoded_paarr_vector(bcs_encoded_rsp.as_slice()).unwrap();
+        assert_eq!(paar.authenticator_data.backup_eligible, false);
+
+        // Test that encoding and decoding functionality work as expected
+        let bcs_bytes = generate_bcs_encoded_paarr_vector(
+            paar.signature.as_slice(),
+            paar.authenticator_data_bytes.as_slice(),
+            paar.client_data_bytes.as_slice(),
+        )
+        .unwrap();
+        assert_eq!(bcs_bytes.as_slice(), bcs_encoded_rsp.as_slice());
+    }
+
+    #[test]
     fn test_der_to_raw_signature() {
         // Captured authentication attempt
         let rsp_d: PublicKeyCredential = serde_json::from_str(RSP).unwrap();
@@ -264,17 +375,87 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_public_key_credential() {
-        let _ = tracing_subscriber::fmt::try_init();
+    fn test_generate_bcs_encoded_paarr_vector() {
+        // Captured authentication attempt
+        let rsp_d: PublicKeyCredential = serde_json::from_str(RSP).unwrap();
+
+        // Incorrect encoding -> client_data_json should swap with authenticator_data
+        let incorrect_bcs_encoded_paarr_vec = generate_bcs_encoded_paarr_vector(
+            rsp_d.response.signature.0.as_slice(),
+            rsp_d.response.client_data_json.0.as_slice(),
+            rsp_d.response.authenticator_data.0.as_slice(),
+        );
+        assert!(incorrect_bcs_encoded_paarr_vec.is_err());
+
+        // Correct encoding
+        let correct_bcs_encoded_paarr_vec = generate_bcs_encoded_paarr_vector(
+            rsp_d.response.signature.0.as_slice(),
+            rsp_d.response.authenticator_data.0.as_slice(),
+            rsp_d.response.client_data_json.0.as_slice(),
+        );
+        assert!(correct_bcs_encoded_paarr_vec.is_ok());
+
+        // Check PAARR decoding
+        let paarr =
+            parse_bcs_encoded_paarr_vector(correct_bcs_encoded_paarr_vec.unwrap().as_slice());
+        assert!(paarr.is_ok());
+        assert_eq!(paarr.unwrap().authenticator_data.counter, 20)
+    }
+
+    #[test]
+    fn test_parse_bcs_encoded_paarr() {
+        // Decode bcs encoded paarr
+        let rsp = create_bcs_encoded_paarr_from_rsp();
+        let paarr = parse_bcs_encoded_paarr_vector(rsp.as_slice());
+        assert!(paarr.is_ok());
+
+        // Assert bcs paarr attributes are equal
+        let rsp_d: PublicKeyCredential = serde_json::from_str(RSP).unwrap();
+        assert_eq!(
+            rsp_d.response.signature.0,
+            paarr.as_ref().unwrap().signature
+        );
+        assert_eq!(
+            rsp_d.response.authenticator_data.0,
+            paarr.as_ref().unwrap().authenticator_data_bytes
+        );
+        assert_eq!(
+            rsp_d.response.client_data_json.0,
+            paarr.as_ref().unwrap().client_data_bytes
+        );
+    }
+
+    #[test]
+    fn test_generate_verification_data() {
+        let rsp = create_bcs_encoded_paarr_from_rsp();
+        let paarr = parse_bcs_encoded_paarr_vector(rsp.as_slice()).unwrap();
+
+        // Generate verification data
+        let v_data = generate_verification_data(
+            paarr.authenticator_data_bytes.as_slice(),
+            paarr.client_data_bytes.as_slice(),
+        );
+        // 37 bytes (authenticator data) + 32 bytes (client data json hash) = 69 bytes
+        assert_eq!(v_data.len(), 69);
+        // Check to make sure the binary concatenation order is authenticator data first
+        // and then client data json hash second
+        assert_eq!(paarr.authenticator_data_bytes[0..36], v_data[0..36]);
+    }
+
+    #[test]
+    fn test_verify_signature() {
+        let rsp = create_bcs_encoded_paarr_from_rsp();
+        let paarr = parse_bcs_encoded_paarr_vector(rsp.as_slice()).unwrap();
+
+        // Generate verification data
+        let v_data = generate_verification_data(
+            paarr.authenticator_data_bytes.as_slice(),
+            paarr.client_data_bytes.as_slice(),
+        );
 
         // Create the test credential
         let cred = create_correct_p256_credential();
-
         let rsp_d: PublicKeyCredential = serde_json::from_str(RSP).unwrap();
-
-        // Parse public key credential
-        let r = parse_public_key_credential(&rsp_d, COSEAlgorithm::ES256);
-        assert!(r.is_ok());
 
         // Now verify it!
         match cred.cred.key {
@@ -291,14 +472,14 @@ mod tests {
                     &generic_array_y,
                     false,
                 );
+
                 let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point);
                 assert!(verifying_key.is_ok());
 
-                let (message_bytes, signature, ..) = r.unwrap();
-
-                let verified = verifying_key
-                    .unwrap()
-                    .verify(message_bytes.as_slice(), &signature);
+                let signature =
+                    p256_der_to_fixed_size_signature(rsp_d.response.signature.0.as_slice())
+                        .unwrap();
+                let verified = verifying_key.unwrap().verify(v_data.as_slice(), &signature);
                 assert!(verified.is_ok());
             }
             _ => {
@@ -308,17 +489,19 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_public_key_credential_failure() {
-        let _ = tracing_subscriber::fmt::try_init();
+    fn test_verify_signature_failure() {
+        let rsp = create_bcs_encoded_paarr_from_rsp();
+        let paarr = parse_bcs_encoded_paarr_vector(rsp.as_slice()).unwrap();
 
-        // Create the test credential
+        // Generate verification data
+        let v_data = generate_verification_data(
+            paarr.client_data_bytes.as_slice(),
+            paarr.authenticator_data_bytes.as_slice(),
+        );
+
+        // Create the INCORRECT test credential
         let cred = create_incorrect_p256_credential();
-
         let rsp_d: PublicKeyCredential = serde_json::from_str(RSP).unwrap();
-
-        // Parse public key credential
-        let r = parse_public_key_credential(&rsp_d, COSEAlgorithm::ES256);
-        assert!(r.is_ok());
 
         // Now verify it!
         match cred.cred.key {
@@ -338,13 +521,12 @@ mod tests {
                 let verifying_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point);
                 assert!(verifying_key.is_ok());
 
-                let (verification_data, signature, ..) = r.unwrap();
+                let signature =
+                    p256_der_to_fixed_size_signature(rsp_d.response.signature.0.as_slice())
+                        .unwrap();
+                let verified = verifying_key.unwrap().verify(v_data.as_slice(), &signature);
 
-                // Should err as verifying_key does not correspond to this signature
-                let verified = verifying_key
-                    .unwrap()
-                    .verify(verification_data.as_slice(), &signature);
-
+                // Should fail
                 assert!(verified.is_err());
             }
             _ => {

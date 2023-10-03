@@ -37,6 +37,7 @@ der-parser = "7.0.0"
 compact_jwt.workspace = true
 uuid = { workspace = true, features = ["serde"] }
 p256 = { version = "0.13.2" } #, features = ["serde"] }
+bcs = { git = "https://github.com/aptos-labs/bcs.git", rev = "d31fab9d81748e2594be5cd5cdf845786a30562d" }
 
 [dev-dependencies]
 hex-literal = "0.3"
