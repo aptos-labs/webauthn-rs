@@ -1,6 +1,7 @@
 //! Possible errors that may occur during Webauthn Operation processing
 
 use base64::DecodeError as b64DecodeError;
+use bcs::Error as BCSError;
 use openssl::error::ErrorStack as OpenSSLErrorStack;
 use serde_cbor_2::error::Error as CBORError;
 use serde_json::error::Error as JSONError;
@@ -162,6 +163,9 @@ pub enum WebauthnError {
     #[error("A base64 parser failure has occurred")]
     ParseBase64Failure(#[from] b64DecodeError),
 
+    #[error("A BCS parser failure has occurred")]
+    ParseBCSFailure(#[from] BCSError),
+
     #[error("A CBOR parser failure has occurred")]
     ParseCBORFailure(#[from] CBORError),
 
@@ -289,6 +293,9 @@ pub enum WebauthnError {
 
     #[error("The attestation requst indicates cred protect was required, but user verification was not performed")]
     SshPublicKeyInconsistentUserVerification,
+
+    #[error("A BCS encoding failure has occurred")]
+    EncodeBCSFailure,
 }
 
 impl PartialEq for WebauthnError {
