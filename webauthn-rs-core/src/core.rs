@@ -335,8 +335,12 @@ impl WebauthnCore {
         Ok(credential)
     }
 
+    /// Register Credential Internal
+    ///
+    /// Converted method from `pub(crate)` to `pub`
+    /// for testing in Aptos' `AccountAuthenticator`.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn register_credential_internal(
+    pub fn register_credential_internal(
         &self,
         reg: &RegisterPublicKeyCredential,
         policy: UserVerificationPolicy,

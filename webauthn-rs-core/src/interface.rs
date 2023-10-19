@@ -60,6 +60,12 @@ impl AuthenticationState {
     pub fn set_allowed_credentials(&mut self, credentials: Vec<Credential>) {
         self.credentials = credentials;
     }
+
+    /// set the challenge of the authentication state
+    /// Note: added method for easier testing with Aptos AccountAuthenticator
+    pub fn set_challenge(&mut self, challenge: Base64UrlSafeData) {
+        self.challenge = challenge;
+    }
 }
 
 /// An EDDSACurve identifier. You probably will never need to alter

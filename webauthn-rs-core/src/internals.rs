@@ -26,7 +26,7 @@ pub struct Challenge(Vec<u8>);
 
 impl Challenge {
     /// Creates a new Challenge from a vector of bytes.
-    pub(crate) fn new(challenge: Vec<u8>) -> Self {
+    pub fn new(challenge: Vec<u8>) -> Self {
         Challenge(challenge)
     }
 }
