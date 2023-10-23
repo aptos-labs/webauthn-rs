@@ -39,6 +39,7 @@ pub mod crypto;
 
 pub mod assertion;
 pub mod core;
+pub mod encoding;
 pub mod error;
 pub mod interface;
 pub mod internals;
